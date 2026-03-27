@@ -1,6 +1,8 @@
+from sklearn.preprocessing import scale
 import streamlit as st
 import base64
 from datetime import datetime
+import re
 
 # Importăm logica din backend
 from backend import call_ollama, DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL
@@ -130,50 +132,240 @@ h3 { font-family: var(--mono) !important; font-size: .68rem !important; color: v
 MERMAID_THEMES = {"default": "default", "dark": "dark", "forest": "forest", "neutral": "neutral", "base": "base"}
 
 
-def render_mermaid(code: str, theme: str = "default", height: int = 520) -> str:
-    bg = "#ffffff" if theme not in ("dark",) else "#1a1a2e"
-    return f"""<!DOCTYPE html><html><head>
+def render_mermaid(code: str, theme: str = "default", height: int = 650) -> str:
+    bg = "#ffffff" if theme != "dark" else "#1a1a2e"
+    text = "#111111" if theme != "dark" else "#e8eef5"
+
+    safe_code = code.replace("</", "<\\/")
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
 <meta charset="UTF-8">
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: {bg}; font-family: sans-serif; overflow: hidden; }}
-  .mermaid .nodeLabel {{ color: inherit !important; }}
-  #container {{ width: 100vw; height: {height}px; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }}
-  #diagram {{ transform-origin: center center; transition: transform .2s ease; cursor: grab; user-select: none; }}
-  #diagram:active {{ cursor: grabbing; }}
-  #controls {{ position: absolute; bottom: 12px; right: 12px; display: flex; gap: 6px; z-index: 10; }}
-  #controls button {{ background: rgba(0,0,0,.6); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 5px; padding: 4px 10px; font-size: 13px; cursor: pointer; backdrop-filter: blur(4px); }}
-  #controls button:hover {{ background: rgba(0,150,200,.7); }}
-  .mermaid {{ display: flex; justify-content: center; align-items: center; }}
-  svg {{ max-width: 100%; height: auto; }}
-</style>
-</head><body>
-<div id="container">
-  <div id="diagram"><div class="mermaid">{code}</div></div>
-  <div id="controls">
-    <button onclick="zoom(1.2)">＋</button>
-    <button onclick="zoom(0.8)">－</button>
-    <button onclick="reset()">⊙</button>
-  </div>
-</div>
-<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-mermaid.initialize({{ startOnLoad: true, theme: '{theme}', securityLevel: 'loose', flowchart: {{ curve: 'basis', useMaxWidth: true, htmlLabels: true }}, sequence: {{ useMaxWidth: true }}, er: {{ useMaxWidth: true }} }});
-</script>
-<script>
-let scale = 1, tx = 0, ty = 0;
-const el = document.getElementById('diagram');
-function apply() {{ el.style.transform = `translate(${{tx}}px,${{ty}}px) scale(${{scale}})`; }}
-function zoom(f) {{ scale = Math.min(3, Math.max(0.3, scale * f)); apply(); }}
-function reset() {{ scale = 1; tx = 0; ty = 0; apply(); }}
-let drag = false, sx, sy;
-el.addEventListener('mousedown', e => {{ drag = true; sx = e.clientX - tx; sy = e.clientY - ty; }});
-document.addEventListener('mouseup', () => drag = false);
-document.addEventListener('mousemove', e => {{ if (drag) {{ tx = e.clientX - sx; ty = e.clientY - sy; apply(); }} }});
-el.addEventListener('wheel', e => {{ e.preventDefault(); zoom(e.deltaY < 0 ? 1.1 : 0.9); }}, {{passive: false}});
-</script>
-</body></html>"""
+  * {{
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }}
 
+  body {{
+    background: {bg};
+    color: {text};
+    font-family: Arial, sans-serif;
+    overflow: hidden;
+  }}
+
+  #outer {{
+    width: 100vw;
+    height: {height}px;
+    position: relative;
+    background: {bg};
+    overflow: auto;
+  }}
+
+  #container {{
+    min-width: 100%;
+    min-height: 100%;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 24px;
+  }}
+
+  #diagram {{
+    transform-origin: top center;
+    transition: transform 0.15s ease;
+    cursor: grab;
+    user-select: none;
+  }}
+
+  #diagram:active {{
+    cursor: grabbing;
+  }}
+
+  .mermaid {{
+    display: inline-block;
+  }}
+
+  svg {{
+    width: auto !important;
+    height: auto !important;
+    max-width: none !important;
+    min-width: 300px;
+  }}
+
+  #controls {{
+    position: sticky;
+    bottom: 12px;
+    float: right;
+    display: flex;
+    gap: 6px;
+    z-index: 20;
+    margin: 0 12px 12px 0;
+  }}
+
+  #controls button {{
+    background: rgba(0,0,0,.7);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }}
+
+  #controls button:hover {{
+    background: rgba(0,150,200,.75);
+  }}
+
+  .error {{
+    color: #ff4757;
+    font-family: monospace;
+    white-space: pre-wrap;
+    padding: 20px;
+  }}
+</style>
+</head>
+<body>
+  <div id="outer">
+    <div id="container">
+      <div id="diagram">
+        <pre class="mermaid">{safe_code}</pre>
+      </div>
+    </div>
+    <div id="controls">
+      <button onclick="zoom(1.15)">＋</button>
+      <button onclick="zoom(0.87)">－</button>
+      <button onclick="resetView()">⊙</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+
+    mermaid.initialize({{
+      startOnLoad: true,
+      theme: '{theme}',
+      securityLevel: 'loose',
+      fontFamily: 'Arial, sans-serif',
+      themeVariables: {{
+        fontSize: '18px',
+        primaryTextColor: '{text}',
+        lineColor: '{text}',
+        secondaryColor: '#dde7f0',
+        tertiaryColor: '#f4f7fb'
+      }},
+      flowchart: {{
+        useMaxWidth: false,
+        htmlLabels: true,
+        curve: 'linear',
+        nodeSpacing: 50,
+        rankSpacing: 70,
+        padding: 20
+      }},
+      sequence: {{
+        useMaxWidth: false,
+        wrap: true,
+        actorMargin: 80,
+        width: 180,
+        height: 70,
+        boxMargin: 12,
+        boxTextMargin: 8,
+        noteMargin: 12,
+        messageMargin: 45
+      }},
+      er: {{
+        useMaxWidth: false
+      }},
+      gantt: {{
+        useMaxWidth: false
+      }}
+    }});
+
+    let scale = 1;
+    let tx = 0;
+    let ty = 0;
+    const el = document.getElementById('diagram');
+
+    function apply() {{
+      el.style.transform = `translate(${{tx}}px, ${{ty}}px) scale(${{scale}})`;
+    }}
+
+    window.zoom = function(factor) {{
+      scale = Math.min(2.5, Math.max(0.5, scale * factor));
+      apply();
+    }}
+
+    window.resetView = function() {{
+      scale = 1;
+      tx = 0;
+      ty = 0;
+      apply();
+    }}
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    el.addEventListener('mousedown', (e) => {{
+      dragging = true;
+      startX = e.clientX - tx;
+      startY = e.clientY - ty;
+    }});
+
+    document.addEventListener('mouseup', () => {{
+      dragging = false;
+    }});
+
+    document.addEventListener('mousemove', (e) => {{
+      if (!dragging) return;
+      tx = e.clientX - startX;
+      ty = e.clientY - startY;
+      apply();
+    }});
+
+    el.addEventListener('wheel', (e) => {{
+      e.preventDefault();
+      zoom(e.deltaY < 0 ? 1.08 : 0.92);
+    }}, {{ passive: false }});
+
+    window.addEventListener('error', (e) => {{
+      document.body.innerHTML = `<div class="error">Mermaid render error:\\n${{e.message}}</div>`;
+    }});
+  </script>
+</body>
+</html>"""
+
+def sanitize_mermaid(code: str) -> str:
+    if not code:
+        return "flowchart TD\n    A[Empty diagram]"
+    code = code.strip()
+    code = re.sub(r"^```mermaid\s*", "", code, flags=re.IGNORECASE)
+    code = re.sub(r"^```\s*", "", code)
+    code = re.sub(r"\s*```$", "", code)
+    lines = [line.rstrip() for line in code.splitlines()]
+    return "\n".join(lines).strip()
+
+def looks_like_mermaid(code: str) -> bool:
+    starters = (
+        "flowchart", "graph", "sequenceDiagram", "classDiagram",
+        "erDiagram", "stateDiagram", "stateDiagram-v2", "gantt"
+    )
+    stripped = code.strip()
+    return stripped.startswith(starters)
+
+def estimate_node_count(mermaid_code: str) -> int:
+    patterns = [
+        r'\b[A-Za-z0-9_]+\[',     
+        r'\b[A-Za-z0-9_]+\(',     
+        r'\b[A-Za-z0-9_]+\{',     
+        r'\b[A-Za-z0-9_]+\[\(',   
+    ]
+    count = 0
+    for p in patterns:
+        count += len(re.findall(p, mermaid_code))
+    return max(count, 1)
 
 # ══════════════════════════════════════════════════════════
 # SESSION STATE
@@ -308,12 +500,16 @@ with col_chat:
         })
 
         if not is_guard and not is_clarify and parsed.get("mermaid_code"):
+            clean_code = sanitize_mermaid(parsed["mermaid_code"])
+
+            if not looks_like_mermaid(clean_code):
+                clean_code = "flowchart TD\n    A[Invalid Mermaid output]\n    B[Try regenerate or edit manually]\n    A --> B"
             label = trigger_input[:40] + ("…" if len(trigger_input) > 40 else "")
             entry = {
-                "mermaid_code": parsed["mermaid_code"], "description": parsed.get("diagram_description", ""),
+                "mermaid_code": clean_code, "description": parsed.get("diagram_description", ""),
                 "label": label, "ts": datetime.now().strftime("%H:%M:%S"),
                 "dtype": parsed.get("diagram_type", "flowchart"), "confidence": parsed.get("confidence", 75),
-                "node_count": parsed.get("node_count", 0), "corrections": parsed.get("corrections_made", []),
+                "node_count": estimate_node_count(clean_code), "corrections": parsed.get("corrections_made", []),
                 "assumptions": parsed.get("assumptions_made", []),
             }
             st.session_state.diagrams.append(entry)
@@ -345,8 +541,26 @@ with col_canvas:
         st.markdown(pills, unsafe_allow_html=True)
         st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
-        st.components.v1.html(render_mermaid(d["mermaid_code"], theme=MERMAID_THEMES[st.session_state.theme]),
-                              height=500, scrolling=False)
+        diagram_type = d.get("dtype", "flowchart")
+
+        dynamic_height = {
+            "sequenceDiagram": 760,
+            "flowchart": 680,
+            "erDiagram": 700,
+            "classDiagram": 700,
+            "stateDiagram-v2": 680,
+            "gantt": 720
+        }.get(diagram_type, 680)
+
+        st.components.v1.html(
+            render_mermaid(
+                d["mermaid_code"],
+                theme=MERMAID_THEMES[st.session_state.theme],
+                height=dynamic_height
+            ),
+            height=dynamic_height,
+            scrolling=True
+        )
 
         with st.expander("⬡ Edit · Export"):
             edited = st.text_area("mermaid", value=d["mermaid_code"], height=200, label_visibility="collapsed",
